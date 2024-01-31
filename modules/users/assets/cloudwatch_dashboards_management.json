@@ -1,0 +1,15 @@
+{
+    "Version": "2012-10-17",
+    "Statement": [
+        {
+            "Action": [
+                "cloudwatch:GetDashboard",
+                "cloudwatch:ListDashboards",
+                "cloudwatch:PutDashboard",
+                "cloudwatch:DeleteDashboards"
+            ],
+            "Effect": "Allow",
+            "Resource": "*"
+        }
+    ]
+}

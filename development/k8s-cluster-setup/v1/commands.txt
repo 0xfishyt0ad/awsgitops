@@ -1,0 +1,7 @@
+eksctl create iamserviceaccount \
+--name fluent-cloudwatch-sa \
+--namespace apps \
+--cluster env-dev-eks-cluster \
+--attach-policy-arn arn:aws:iam::aws:policy/CloudWatchAgentServerPolicy  \
+--region eu-central-1 \
+--approve

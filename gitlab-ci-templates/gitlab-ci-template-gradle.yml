@@ -1,0 +1,105 @@
+variables:
+  REGISTRY: $AWS_ECR_REGISTRY/$CI_PROJECT_NAME
+  REGISTRY_REPO_NAME: $CI_PROJECT_NAME/$CI_PROJECT_PATH
+  DOCKER_IMAGE_NAME: $REGISTRY/$CI_PROJECT_PATH
+  DOCKER_IMAGE_TAG: $CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA
+  SONAR_IMAGE: ""
+  BUILD_IMAGE: gradle:jdk17-alpine
+  REGISTRY_IMAGE: docker:20.10.11
+  SONAR_HOST_URL: ""
+  SERVICE_NAME: ""
+  NAMESPACE: ""
+  TARGET_REPO: "org/infrastructure/gitops.git"
+  MAIN_BRANCH: "dev"
+  REGISTRY_USER: ""
+  REGION: "eu-central-1"
+
+stages:
+  - build
+  - package
+  - deploy   
+
+build_gradle:
+  stage: build
+  image: $BUILD_IMAGE
+  script:
+    - ./gradlew clean build -x test
+    - echo "Successfully build gradle for $CI_PROJECT_NAME"
+  tags:
+    - internal-docker
+  artifacts:
+    paths:
+      - build/libs/*-SNAPSHOT.jar
+
+package_docker:
+  stage: package
+  image: $REGISTRY_IMAGE
+  before_script:
+    - apk add --no-cache curl jq python3 py3-pip
+    - pip3 install --upgrade awscli
+    - aws sts assume-role-with-web-identity --role-arn ${AWS_ROLE_ARN} --role-session-name "GitLabCI" --web-identity-token ${CI_JOB_JWT_V2} > assume-role-output.json
+    - export AWS_ACCESS_KEY_ID=$(jq -r '.Credentials.AccessKeyId' assume-role-output.json)
+    - export AWS_SECRET_ACCESS_KEY=$(jq -r '.Credentials.SecretAccessKey' assume-role-output.json)
+    - export AWS_SESSION_TOKEN=$(jq -r '.Credentials.SessionToken' assume-role-output.json)
+    - aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
+    - aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
+    - aws configure set aws_session_token "$AWS_SESSION_TOKEN"
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin "$AWS_ECR_REGISTRY"
+    - echo "Login ok"
+  script:
+    - REPO_EXISTS=$(aws ecr describe-repositories --repository-names $REGISTRY_REPO_NAME --region $AWS_DEFAULT_REGION --output text --query 'repositories[].repositoryName' || true)
+    - if [[ -z $REPO_EXISTS ]]; then aws ecr create-repository --repository-name $REGISTRY_REPO_NAME --region $AWS_DEFAULT_REGION; fi
+    - docker build -t $DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG --build-arg version=$APP_VERSION .
+    - docker push $DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG
+    - echo "Successfully packaged $CI_PROJECT_NAME and sent to $DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG"
+  tags:
+    - internal-docker
+
+deploy:
+  stage: deploy
+  image: alpine:3.13.5
+  before_script:
+    - apk add git yq
+  script:
+    - git clone -b ${MAIN_BRANCH} https://${DEPLOY_USER}:${DEPLOY_TOKEN}@gitlab.com/${TARGET_REPO} gitops-app
+    - cd gitops-app
+    - git config user.name "${GITLAB_USER_NAME}"
+    - git config user.email "${GITLAB_USER_EMAIL}"
+    - cd helm-charts/$NAMESPACE/$SERVICE_NAME
+    - yq w -i values.yaml image.tag $DOCKER_IMAGE_TAG
+    - git commit -am "Project - $CI_PROJECT_NAME - pipeline=${CI_PIPELINE_ID} - commit=${CI_COMMIT_MESSAGE}"
+    - git push -o ci.skip origin ${MAIN_BRANCH}
+  tags:
+    - internal-docker
+
+#gradle_jtest:
+#  stage: jtest
+#  image: $BUILD_IMAGE
+#  except:
+#    variables:
+#      - $SCHEMA_CHECK
+#  script:
+#    - ./gradlew clean build
+#    - echo "Successfully build gradle jacoco coverage for $CI_PROJECT_NAME"
+#  tags:
+#    - internal-docker
+#  artifacts:
+#    paths:
+#      - app/build/reports/coverage.xml
+#
+#gradle_publish:
+#  tags:
+#    - internal-docker
+#  stage: deploy
+#  image: eclipse-temurin:17-jdk-alpine
+#  script:
+#    - |
+#      if [ "main" == "$CI_COMMIT_REF_NAME" ] ; then \
+#        ./gradlew release -Prelease.localOnly
+#      fi
+#    - ./gradlew publish
+#    - ./gradlew currentVersion -q -q -Prelease.quiet | sort -u > schemaVersion.txt
+#    - echo "SCHEMA_VERSION=v$(./gradlew currentVersion -q -Prelease.quiet | sort -u)" >> variables.env
+#  artifacts:
+#    reports:
+#      dotenv: variables.env

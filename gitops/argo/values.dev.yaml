@@ -1,0 +1,36 @@
+default:
+  app:
+    enableAutoSync: true
+    autoSyncPrune: false
+    createNamespace: true
+    destination:
+      server: https://kubernetes.default.svc
+      namespace: null
+    project: default
+    source:
+      path: null
+      repoURL: git@gitlab.com:project/infrastructure/gitops.git
+      targetRevision: dev
+      extraSourceFields: |
+        helm:
+          valueFiles:
+          - values.dev.yaml
+
+applications:
+  ################################################################################################
+  # applications in namespace frontend
+  ################################################################################################
+  frontend-app:
+    destination:
+      namespace: frontend
+    source:
+      path: helm-charts/frontend/frontend-app
+  
+  ################################################################################################
+  # applications in namespace backend
+  ################################################################################################
+  user:
+    destination:
+      namespace: backend
+    source:
+      path: helm-charts/backend/user

@@ -1,0 +1,102 @@
+variables:
+  REGISTRY: $AWS_ECR_REGISTRY/$CI_PROJECT_NAME
+  REGISTRY_REPO_NAME: $CI_PROJECT_NAME/$CI_PROJECT_PATH
+  DOCKER_IMAGE_NAME: $REGISTRY/$CI_PROJECT_PATH
+  DOCKER_IMAGE_TAG: $CI_COMMIT_REF_SLUG-$CI_COMMIT_SHORT_SHA
+  SONAR_IMAGE: ""
+  BUILD_IMAGE: gradle:jdk17-alpine
+  REGISTRY_IMAGE: docker:20.10.11
+  SONAR_HOST_URL: ""
+  SERVICE_NAME: ""
+  NAMESPACE: ""
+  TARGET_REPO: "org/infrastructure/gitops.git"
+  MAIN_BRANCH: "dev"
+  REGISTRY_USER: ""
+  REGION: "eu-central-1"
+
+workflow:
+  rules:
+    - if: $CI_COMMIT_BRANCH == "dev"
+      variables:
+        ENVIRONMENT: "dev"
+
+stages:
+  - package
+  - deploy
+#  - utest
+#  - sonar
+
+package_docker:
+  stage: package
+  image: $REGISTRY_IMAGE
+  before_script:
+    - apk add --no-cache curl jq python3 py3-pip
+    - pip3 install --upgrade awscli
+    - aws sts assume-role-with-web-identity --role-arn ${AWS_ROLE_ARN} --role-session-name "GitLabCI" --web-identity-token ${CI_JOB_JWT_V2} > assume-role-output.json
+    - export AWS_ACCESS_KEY_ID=$(jq -r '.Credentials.AccessKeyId' assume-role-output.json)
+    - export AWS_SECRET_ACCESS_KEY=$(jq -r '.Credentials.SecretAccessKey' assume-role-output.json)
+    - export AWS_SESSION_TOKEN=$(jq -r '.Credentials.SessionToken' assume-role-output.json)
+    - aws configure set aws_access_key_id "$AWS_ACCESS_KEY_ID"
+    - aws configure set aws_secret_access_key "$AWS_SECRET_ACCESS_KEY"
+    - aws configure set aws_session_token "$AWS_SESSION_TOKEN"
+    - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin "$AWS_ECR_REGISTRY"
+    - echo "Login ok"
+  script:
+    - REPO_EXISTS=$(aws ecr describe-repositories --repository-names $REGISTRY_REPO_NAME --region $AWS_DEFAULT_REGION --output text --query 'repositories[].repositoryName' || true)
+    - if [[ -z $REPO_EXISTS ]]; then aws ecr create-repository --repository-name $REGISTRY_REPO_NAME --region $AWS_DEFAULT_REGION; fi
+    - docker build -t $DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG --build-arg version=$APP_VERSION .
+    - docker push $DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG
+    - echo "Successfully packaged $CI_PROJECT_NAME and sent to $DOCKER_IMAGE_NAME:$DOCKER_IMAGE_TAG"
+  tags:
+    - internal-docker
+
+deploy:
+  stage: deploy
+  image: alpine:3.13.5
+  before_script:
+    - apk add git bash yq openssh
+  script:
+    - git clone -b ${MAIN_BRANCH} https://${DEPLOY_USER}:${DEPLOY_TOKEN}@gitlab.com/${TARGET_REPO} gitops-app
+    - cd gitops-app
+    - git config user.name "${GITLAB_USER_NAME}"
+    - git config user.email "${GITLAB_USER_EMAIL}"
+    - cd helm-charts/$SERVICE_NAME
+    - yq w -i values.yaml image.tag $DOCKER_IMAGE_TAG
+    - git commit -am "Project - $CI_PROJECT_NAME - pipeline=${CI_PIPELINE_ID} - commit=${CI_COMMIT_MESSAGE}"
+    - git push -o ci.skip origin ${MAIN_BRANCH}
+  tags:
+    - internal-docker
+
+#y_unit_tests:
+#  stage: utest
+#  image: node:18
+#  allow_failure: false
+#  before_script:
+#    - yarn install
+#  script:
+#    - yarn test --coverage
+#  tags:
+#    - internal-docker
+#  artifacts:
+#    paths:
+#      - ./coverage/lcov.info
+
+#sonarqube_check:
+#  stage: sonar
+#  image:
+#    name: sonarsource/sonar-scanner-cli:latest
+#    entrypoint: [""]
+#  variables:
+#    SONAR_USER_HOME: "${CI_PROJECT_DIR}/.sonar"  # Defines the location of the analysis task cache
+#    GIT_DEPTH: "0"  # Tells git to fetch all the branches of the project, required by the analysis task
+#  cache:
+#    key: "${CI_JOB_NAME}"
+#    paths:
+#      - .sonar/cache
+#  script:
+#    - sonar-scanner -Dsonar.javascript.lcov.reportPaths=coverage/lcov.info -X
+#  allow_failure: true
+#  only:
+#    - main # or the name of your main branch
+#  tags:
+#    - internal-docker

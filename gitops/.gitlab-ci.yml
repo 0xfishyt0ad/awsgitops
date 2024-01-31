@@ -1,0 +1,16 @@
+stages:
+  - test
+
+helm-check:
+  stage: test
+  image:
+    name: alpine/helm:3.5.4
+    entrypoint: [""]
+  cache: {}
+  before_script:
+    - apk add bash
+  script:
+    - chmod +x ./helm-check.sh
+    - ./helm-check.sh
+  tags:
+    - internal-docker

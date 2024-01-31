@@ -1,0 +1,88 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fargate-log-gen
+  namespace: apps
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: appf
+      k8s-app: fluentd-cloudwatch
+  template:
+    metadata:
+      labels:
+        app: appf
+        k8s-app: fluentd-cloudwatch
+      annotations:
+        iam.amazonaws.com/role: fluent-cloudwatch
+    spec:
+      volumes:
+        - name: fluentdconf
+          configMap:
+            name: fluentd-config
+        - name: app-logs
+          emptyDir: {}
+      serviceAccount: fluent-cloudwatch
+      serviceAccountName: fluent-cloudwatch
+      containers:
+        - name: app
+          image: busybox
+          command: ['sh', '-c']
+          args:
+          - >
+            while true;
+            do echo "Time: $(date) $(cat /dev/urandom | tr -dc a-zA-Z0-9 | fold -w 1024 | head -n 1)" | tee -a /var/log/containers/application.log;
+            sleep 1;
+            done;
+          imagePullPolicy: Always
+          volumeMounts:
+          - mountPath: /var/log/containers
+            name: app-logs
+          resources:
+            requests:
+              cpu: 200m
+              memory: 0.5Gi
+            limits:
+              cpu: 400m
+              memory: 1Gi
+          securityContext:
+            privileged: false
+            readOnlyRootFilesystem: false
+            allowPrivilegeEscalation: false
+        - name: logrotate
+          image: realz/logrotate
+          volumeMounts:
+          - mountPath: /var/log/containers
+            name: app-logs
+          env:
+          - name: CRON_EXPR
+            value: "*/15 * * * *"
+          - name: LOGROTATE_LOGFILES
+            value: "/var/log/containers/*.log"
+          - name: LOGROTATE_FILESIZE
+            value: "50M"
+          - name: LOGROTATE_FILENUM
+            value: "5"
+        - name: fluentd
+          image: fluent/fluentd-kubernetes-daemonset:v1.9.3-debian-cloudwatch-1.0
+          env:
+          - name: REGION
+            value: eu-central-1
+          - name: AWS_REGION
+            value: eu-central-1
+          - name: CLUSTER_NAME
+            value: env-dev-eks-cluster
+          - name: CI_VERSION
+            value: "k8s/1.0.1"
+          resources:
+            limits:
+              memory: 400Mi
+            requests:
+              cpu: 100m
+              memory: 200Mi
+          volumeMounts:
+          - name: fluentdconf
+            mountPath: /fluentd/etc
+          - name: app-logs
+            mountPath: /var/log/containers
